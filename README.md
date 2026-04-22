@@ -8,11 +8,13 @@ A custom Triton GEMV kernel that quantizes the SSM (Mamba-2) layers of Nemotron-
 
 | Metric | BF16 baseline | W4A16 (NanoQuant) | Gain |
 |---|---|---|---|
-| Batch=1 decode (p50) | 44.8 t/s | **54.1 t/s** | **1.21×** |
-| Batch=4 decode (p50) | 44.8 t/s | **99.8 t/s** | **2.23×** |
-| SSM layer VRAM | 16.6 GB | 8.5 GB | **−8.1 GB** |
+| Single decode token/s (p50) | 44.8 t/s | **51.0 t/s** | **1.14×** |
+| Kernel-level batch=4 decode (p50) | 44.8 t/s | **99.8 t/s** | **2.23×** |
+| SSM layer VRAM | 16.6 GB | **8.5 GB** | **−8.1 GB** |
 
 The VRAM reduction makes the model fit comfortably on a single 24 GB GPU with a 32k context window.
+
+**Benchmark methodology:** Single decode t/s measured via OpenAI API against the live vLLM server (20 runs, 3 warmup, 128 output tokens). Kernel-level batch=4 measured directly via the Triton GEMV benchmark with 4 simultaneous decode tokens (`bench/bench_gemv.py`), which is the throughput vLLM achieves when 4 concurrent users are each waiting for their next decode token.
 
 ## Why SSM layers?
 

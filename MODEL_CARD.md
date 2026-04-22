@@ -32,10 +32,13 @@ Quantization code and serving instructions: [github.com/redhelix/nanoquant](http
 
 ### Throughput (RTX 3090, 24 GB GDDR6X)
 
-| Batch size | BF16 baseline | **W4A16 (this model)** | Speedup |
+| Metric | BF16 baseline | **W4A16 (this model)** | Speedup |
 |---|---|---|---|
-| 1 (single decode) | 44.8 t/s | **54.1 t/s** | **1.21×** |
-| 4 (concurrent) | 44.8 t/s | **99.8 t/s** | **2.23×** |
+| Single decode token/s (p50) | 44.8 t/s | **51.0 t/s** | **1.14×** |
+| Kernel batch=4 decode (p50) | 44.8 t/s | **99.8 t/s** | **2.23×** |
+
+*Single decode: measured via OpenAI API against vLLM server (20 runs, 128 output tokens).
+Kernel batch=4: measured directly via Triton GEMV benchmark with 4 simultaneous decode tokens — the throughput vLLM achieves when 4 concurrent sessions are each waiting for their next token.*
 
 ### VRAM
 
