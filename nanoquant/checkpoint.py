@@ -139,17 +139,31 @@ def load_w4a16_checkpoint(
     tensors = load_file(str(shard_path))
     log.info(f"Loaded W4A16 shard: {shard_path} ({len(tensors)} tensors)")
 
+    # Build a lookup: normalised module path → manifest entry.
+    # Handles two manifest key formats:
+    #   save_w4a16_checkpoint:  "layers.0.mixer.in_proj"          (module path)
+    #   convert.py (direct):    "model.layers.0.mixer.in_proj.weight" (state dict key)
+    def _find_meta(name: str, proj_name: str):
+        candidates = (
+            f"{name}.{proj_name}",                        # module path (save_w4a16_checkpoint)
+            f"{name}.{proj_name}.weight",                 # state dict key (convert.py)
+            f"model.{name}.{proj_name}.weight",           # state dict with model. prefix
+            f"backbone.{name}.{proj_name}.weight",        # Nemotron-H uses backbone. prefix
+        )
+        for c in candidates:
+            if c in manifest:
+                return manifest[c]
+        return None
+
     loaded = 0
     for name, module in model.named_modules():
         if type(module).__name__ != "MambaMixer2":
             continue
 
         for proj_name in ("in_proj", "out_proj"):
-            key = f"{name}.{proj_name}"
-            if key not in manifest:
+            meta = _find_meta(name, proj_name)
+            if meta is None:
                 continue
-
-            meta = manifest[key]
             W_q    = tensors[meta["W_q"]]
             scales = tensors[meta["scales"]]
             zeros  = tensors[meta["zeros"]]

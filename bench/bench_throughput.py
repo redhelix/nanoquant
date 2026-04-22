@@ -61,25 +61,43 @@ def _benchmark_single(client, model_id: str, prompt: str, label: str):
     return p10, p50, p90
 
 
-def _benchmark_concurrent(client, model_id: str, prompt: str, batch: int, label: str):
-    """Fire `batch` requests simultaneously, report per-request t/s."""
+def _benchmark_batch(client, model_id: str, prompt: str, batch: int, label: str):
+    """
+    Submit `batch` requests sequentially in quick succession so vLLM
+    schedules them as a single decode batch. Reports aggregate t/s
+    (total tokens / wall time for all batch requests to complete).
+
+    Concurrent HTTP from multiple threads risks triggering concurrent
+    prefills that can OOM CUDA private pool allocations. Sequential
+    submission with a short sleep lets the scheduler batch them properly.
+    """
+    import time
+
+    def _batch_tps():
+        t0 = time.perf_counter()
+        total_tokens = 0
+        for _ in range(batch):
+            resp = client.chat.completions.create(
+                model=model_id,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=MAX_NEW_TOKENS,
+                temperature=0.0,
+                stream=False,
+            )
+            total_tokens += resp.usage.completion_tokens
+        elapsed = time.perf_counter() - t0
+        return total_tokens / elapsed if elapsed > 0 else 0.0
+
     print(f"\n  [{label} batch={batch}] warming up...", end="", flush=True)
-    with ThreadPoolExecutor(max_workers=batch) as ex:
-        for _ in range(WARMUP_RUNS):
-            futs = [ex.submit(_chat, client, model_id, prompt, MAX_NEW_TOKENS) for _ in range(batch)]
-            [f.result() for f in futs]
+    for _ in range(WARMUP_RUNS):
+        _batch_tps()
 
     print(f" measuring ({MEASURE_RUNS} rounds)...", end="", flush=True)
-    all_samples = []
-    with ThreadPoolExecutor(max_workers=batch) as ex:
-        for _ in range(MEASURE_RUNS):
-            futs = [ex.submit(_chat, client, model_id, prompt, MAX_NEW_TOKENS) for _ in range(batch)]
-            all_samples.extend(f.result() for f in futs)
-
-    all_samples.sort()
-    p10 = all_samples[int(len(all_samples) * 0.10)]
-    p50 = statistics.median(all_samples)
-    p90 = all_samples[int(len(all_samples) * 0.90)]
+    samples = [_batch_tps() for _ in range(MEASURE_RUNS)]
+    samples.sort()
+    p10 = samples[int(len(samples) * 0.10)]
+    p50 = statistics.median(samples)
+    p90 = samples[int(len(samples) * 0.90)]
     print(f" done")
     return p10, p50, p90
 
@@ -106,9 +124,9 @@ def run(base_url: str, model_id: str, model_name: str):
         print(f"    batch=1 {label:<6}  p10={p10:.1f}  p50={p50:.1f}  p90={p90:.1f}  t/s")
 
     for label, prompt in [("short", SHORT_PROMPT), ("long", LONG_PROMPT)]:
-        p10, p50, p90 = _benchmark_concurrent(client, model_id, prompt, 4, f"batch=4 {label}")
+        p10, p50, p90 = _benchmark_batch(client, model_id, prompt, 4, f"batch=4 {label}")
         results[f"batch4_{label}"] = (p10, p50, p90)
-        print(f"    batch=4 {label:<6}  p10={p10:.1f}  p50={p50:.1f}  p90={p90:.1f}  t/s (per req)")
+        print(f"    batch=4 {label:<6}  p10={p10:.1f}  p50={p50:.1f}  p90={p90:.1f}  t/s (total)")
 
     print(f"\n{'=' * 60}")
     print(f"  README TABLE FORMAT ({model_name})")
