@@ -26,21 +26,28 @@ W4A16 reduces these to ~4× fewer bytes read per forward pass, directly translat
 ## Architecture
 
 ```
-quantize_w4()          CPU, once at load time — asymmetric int4, column-major packing
-_gemv_w4a16_kernel     Triton, K-parallel 2D grid, atomicAdd into fp32 accumulator
-w4a16_linear           torch.library.custom_op — opaque to Dynamo/aot_compile_fullgraph
-W4A16Linear            nn.Module drop-in for vLLM's ColumnParallelLinear
-patch_nemotron_h()     Replaces in_proj/out_proj in every MambaMixer2 layer
+nanoquant/kernel.py      quantize_w4()       — CPU, asymmetric int4, column-major packing
+                         _gemv_w4a16_kernel  — Triton, K-parallel 2D grid, atomicAdd fp32
+                         w4a16_linear        — torch.library.custom_op (Dynamo leaf)
+nanoquant/linear.py      W4A16Linear         — nn.Module drop-in for vLLM parallel linears
+nanoquant/patch.py       patch_nemotron_h()  — swaps MambaMixer2 in_proj/out_proj
+nanoquant/checkpoint.py  save/load W4A16     — standalone safetensors shard (no re-quant)
+convert.py               offline conversion  — base model → W4A16 checkpoint
+serve/serve.py           vLLM API server     — auto-detects pre-converted vs base model
+bench/bench_throughput.py                   — measures p10/p50/p90 t/s at batch 1 and 4
+eval/run_benchmarks.py                      — lm-eval harness for all 7 accuracy benchmarks
 ```
 
 ## Quick Start
 
-### Option A: Runtime patch (no model conversion needed)
+### Option A: Download pre-quantized checkpoint (recommended)
 
 ```bash
 pip install nanoquant vllm
+huggingface-cli download redhelix/Nemotron-Nano-9B-v2-W4A16 --local-dir ./model
+
 VLLM_USE_BYTECODE_HOOK=0 python serve/serve.py \
-    --model nvidia/NVIDIA-Nemotron-Nano-9B-v2 \
+    --model ./model \
     --host 0.0.0.0 --port 8000 \
     --max-model-len 32768 \
     --gpu-memory-utilization 0.92 \
@@ -48,16 +55,33 @@ VLLM_USE_BYTECODE_HOOK=0 python serve/serve.py \
     --tool-call-parser hermes
 ```
 
-### Option B: Convert and save (use the pre-quantized HF checkpoint)
+### Option B: Convert yourself from the base model
 
 ```bash
-# Convert once, save a quantized checkpoint
-python convert.py \
+# Runs on CPU — no GPU required, ~8 min, ~20 GB RAM
+python convert.py convert \
     --model nvidia/NVIDIA-Nemotron-Nano-9B-v2 \
     --output ./Nemotron-Nano-9B-v2-W4A16
 
-# Or download the pre-converted checkpoint from HuggingFace
-# huggingface-cli download redhelix/Nemotron-Nano-9B-v2-W4A16
+# Verify the checkpoint is intact
+python convert.py verify ./Nemotron-Nano-9B-v2-W4A16
+
+# Serve
+VLLM_USE_BYTECODE_HOOK=0 python serve/serve.py \
+    --model ./Nemotron-Nano-9B-v2-W4A16 \
+    --host 0.0.0.0 --port 8000 \
+    --max-model-len 32768 \
+    --gpu-memory-utilization 0.92
+```
+
+### Option C: Runtime patch against base model (no conversion)
+
+```bash
+VLLM_USE_BYTECODE_HOOK=0 python serve/serve.py \
+    --model nvidia/NVIDIA-Nemotron-Nano-9B-v2 \
+    --host 0.0.0.0 --port 8000 \
+    --max-model-len 32768 \
+    --gpu-memory-utilization 0.92
 ```
 
 ### Python API
@@ -137,15 +161,59 @@ NVIDIA's NVFP4 uses QAD to maintain accuracy closer to BF16. Our W4A16 uses simp
 
 *W4A16 benchmark results pending — contributions welcome.*
 
+## Running Benchmarks
+
+### Throughput (tokens/sec)
+
+```bash
+# Start the server, then in another terminal:
+python bench/bench_throughput.py --model-name W4A16
+# Outputs p10/p50/p90 t/s for batch=1 and batch=4
+```
+
+### Accuracy (lm-evaluation-harness)
+
+```bash
+pip install nanoquant[eval]
+
+# Fast subset (AIME + MATH + GPQA + IFEval):
+python eval/run_benchmarks.py \
+    --model ./Nemotron-Nano-9B-v2-W4A16 \
+    --benchmarks aime,math,gpqa,ifeval \
+    --output-dir ./eval_results
+
+# Full suite (~6h on RTX 3090):
+python eval/run_benchmarks.py \
+    --model ./Nemotron-Nano-9B-v2-W4A16 \
+    --benchmarks all \
+    --output-dir ./eval_results
+```
+
+### Running Tests
+
+```bash
+pip install nanoquant[dev]
+pytest tests/ -v
+```
+
 ## Files
 
 ```
 nanoquant/
-  kernel.py      Triton kernel + quantize_w4() + w4a16_linear custom_op
-  linear.py      W4A16Linear nn.Module
-  patch.py       patch_nemotron_h() for vLLM integration
-convert.py       Offline quantization → HF checkpoint
-serve/serve.py   vLLM API server with runtime patch
+  kernel.py        Triton GEMV kernel, quantize_w4(), w4a16_linear custom_op
+  linear.py        W4A16Linear nn.Module
+  patch.py         patch_nemotron_h() for vLLM
+  checkpoint.py    save/load W4A16 safetensors shard
+convert.py         Offline quantization CLI (convert + verify subcommands)
+serve/serve.py     vLLM API server — auto-detects pre-converted vs base model
+bench/
+  bench_throughput.py   Measures p10/p50/p90 t/s at batch=1 and batch=4
+eval/
+  run_benchmarks.py     lm-eval harness for AIME/MATH/GPQA/LCB/IFEval/RULER
+tests/
+  test_kernel.py        Kernel correctness vs BF16 reference
+  test_linear.py        W4A16Linear forward pass + patch_nemotron_h()
+  test_checkpoint.py    Save/load roundtrip
 ```
 
 ## Requirements

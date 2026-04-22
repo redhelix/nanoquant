@@ -17,9 +17,20 @@ dependencies = [
     "safetensors>=0.4.0",
 ]
 
+[project.optional-dependencies]
+eval  = ["lm-eval[math,ifeval]>=0.4.0", "openai>=1.0.0"]
+dev   = ["pytest>=8.0", "pytest-xdist"]
+
 [project.scripts]
 nanoquant-convert = "convert:main"
+nanoquant-serve   = "serve.serve:main"
+nanoquant-bench   = "bench.bench_throughput:main"
+nanoquant-eval    = "eval.run_benchmarks:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["nanoquant*"]
+include = ["nanoquant*", "serve*", "bench*", "eval*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers   = ["slow: marks tests as slow (deselect with -m 'not slow')"]
