@@ -1,4 +1,4 @@
-from .kernel import quantize_w4, w4a16_linear, gemv_w4a16
+from .kernel import quantize_w4, w4a16_linear, w4a16_linear_decode, gemv_w4a16
 from .linear import W4A16Linear
 from .patch import patch_nemotron_h
 from .checkpoint import save_w4a16_checkpoint, load_w4a16_checkpoint, is_w4a16_checkpoint

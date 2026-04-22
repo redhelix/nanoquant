@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from typing import Optional, Tuple
 
-from .kernel import quantize_w4, w4a16_linear  # noqa: F401 — registers the custom op
+from .kernel import quantize_w4, w4a16_linear, w4a16_linear_decode  # noqa: F401 — registers custom ops
 
 
 class W4A16Linear(nn.Module):
@@ -31,6 +31,13 @@ class W4A16Linear(nn.Module):
         self.register_buffer("W_q",    W_q)
         self.register_buffer("scales", scales)
         self.register_buffer("zeros",  zeros)
+        # Pre-allocated float32 accumulator for batch=1 decode GEMV.
+        # Reusing this buffer eliminates the torch.zeros(N) allocation inside
+        # the custom_op hot path — one of the two causes of CUDA pool exhaustion
+        # during concurrent prefills. Moved to GPU lazily on first forward call
+        # so CPU-only checkpoint loading doesn't allocate device memory.
+        self.register_buffer("_scratch", torch.zeros(weight.shape[0], dtype=torch.float32),
+                             persistent=False)
         self.bias = nn.Parameter(bias) if bias is not None else None
 
     @classmethod
@@ -47,7 +54,19 @@ class W4A16Linear(nn.Module):
     ) -> Tuple[torch.Tensor, None]:
         orig_shape = x.shape
         x_2d = x.reshape(-1, self.in_features)
-        y = torch.ops.nanoquant.linear(x_2d, self.W_q, self.scales, self.zeros, self.group_size)
+
+        if x_2d.shape[0] == 1:
+            # Decode path: reuse pre-allocated scratch — zero CUDA allocations.
+            y = torch.ops.nanoquant.linear_decode(
+                x_2d, self.W_q, self.scales, self.zeros, self.group_size, self._scratch
+            )
+        else:
+            # Prefill path: allocates per-row scratch; bounded by chunked-prefill
+            # chunk size (vLLM default 512 tokens) so peak memory stays manageable.
+            y = torch.ops.nanoquant.linear(
+                x_2d, self.W_q, self.scales, self.zeros, self.group_size
+            )
+
         if self.bias is not None:
             y = y + self.bias
         if bias is not None:

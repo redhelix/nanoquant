@@ -183,6 +183,13 @@ def load_w4a16_checkpoint(
             q_linear.register_buffer("W_q",    W_q.to(device))
             q_linear.register_buffer("scales", scales.to(device))
             q_linear.register_buffer("zeros",  zeros.to(device))
+            # Pre-allocate decode scratch buffer — same as W4A16Linear.__init__ does,
+            # but must be done explicitly here since we bypass __init__.
+            q_linear.register_buffer(
+                "_scratch",
+                torch.zeros(out_f, dtype=torch.float32, device=device),
+                persistent=False,
+            )
             q_linear.bias = None
 
             setattr(module, proj_name, q_linear)

@@ -83,6 +83,17 @@ if __name__ == "__main__":
     if "--compilation-config" not in sys.argv and "-cc" not in sys.argv:
         sys.argv += ["--compilation-config", '{"max_cudagraph_capture_size":8}']
 
+    # Prevent concurrent prefill OOM: W4A16 allocates a float32 scratch buffer
+    # per row per SSM layer during prefill. Concurrent prefills multiply this across
+    # all requests simultaneously, exhausting the CUDA private pool and causing
+    # an unrecoverable GPU error. Chunked prefill breaks long sequences into small
+    # chunks so peak scratch memory stays bounded regardless of sequence length.
+    # max-num-seqs caps the total requests in flight to limit worst-case concurrency.
+    if "--enable-chunked-prefill" not in sys.argv:
+        sys.argv += ["--enable-chunked-prefill"]
+    if "--max-num-seqs" not in sys.argv:
+        sys.argv += ["--max-num-seqs", "8"]
+
     from vllm.entrypoints.openai.api_server import run_server, make_arg_parser
     from vllm.utils.argparse_utils import FlexibleArgumentParser
     import asyncio

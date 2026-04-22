@@ -168,7 +168,7 @@ def w4a16_linear(
     body runs eagerly during CUDA graph capture, recording per-batch-size kernels.
 
     batch=1  → B sequential Triton GEMVs (fast decode, memory-bound)
-    batch>1  → same loop, all captured (4x fewer weight bytes than BF16 matmul)
+    batch>1  → same loop; use with --enable-chunked-prefill to bound chunk size
     """
     K      = x.shape[1]
     N      = W_q.shape[1]
@@ -190,6 +190,42 @@ def w4a16_linear(
 @w4a16_linear.register_fake
 def _w4a16_linear_fake(x, W_q, scales, zeros, group_size):
     return x.new_empty(x.shape[0], W_q.shape[1], dtype=torch.bfloat16)
+
+
+@torch.library.custom_op("nanoquant::linear_decode", mutates_args=("scratch",))
+def w4a16_linear_decode(
+    x:      torch.Tensor,   # [1, K] bfloat16  — decode only (batch=1)
+    W_q:    torch.Tensor,   # [K//2, N] uint8   col-major
+    scales: torch.Tensor,   # [K//gs, N] bfloat16
+    zeros:  torch.Tensor,   # [K//gs, N] bfloat16
+    group_size: int,
+    scratch: torch.Tensor,  # [N] float32  pre-allocated — mutated in place, zero allocation
+) -> torch.Tensor:
+    """
+    Decode-only variant that reuses a pre-allocated float32 scratch buffer.
+    Eliminates the torch.zeros(N) allocation per layer per decode step,
+    preventing CUDA private pool exhaustion under concurrent load.
+
+    Only valid for batch=1 (single decode token). W4A16Linear.forward routes
+    batch>1 to w4a16_linear instead.
+    """
+    K      = x.shape[1]
+    N      = W_q.shape[1]
+    n_g    = K // group_size
+    K_half = K // 2
+    scratch.zero_()
+    grid = lambda meta: (triton.cdiv(N, meta["BLOCK_N"]), n_g)
+    _gemv_w4a16_kernel[grid](
+        x[0], W_q, scales, zeros, scratch,
+        N, K, n_g, K_half,
+        GROUP_SIZE=group_size,
+    )
+    return scratch.to(torch.bfloat16).unsqueeze(0)   # [1, N]
+
+
+@w4a16_linear_decode.register_fake
+def _w4a16_linear_decode_fake(x, W_q, scales, zeros, group_size, scratch):
+    return x.new_empty(1, W_q.shape[1], dtype=torch.bfloat16)
 
 
 def gemv_w4a16(
