@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "nanoquant"
+version = "0.1.0"
+description = "W4A16 quantization + Triton GEMV kernel for Nemotron-Nano-9B-v2 SSM decode"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.3.0",
+    "triton>=3.0.0",
+    "transformers>=4.40.0",
+    "accelerate>=0.30.0",
+    "safetensors>=0.4.0",
+]
+
+[project.scripts]
+nanoquant-convert = "convert:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nanoquant*"]

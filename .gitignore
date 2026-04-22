@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.triton/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.safetensors
+*.bin
+Nemotron-Nano-9B-v2-W4A16/
