@@ -144,11 +144,14 @@ def load_w4a16_checkpoint(
     #   save_w4a16_checkpoint:  "layers.0.mixer.in_proj"          (module path)
     #   convert.py (direct):    "model.layers.0.mixer.in_proj.weight" (state dict key)
     def _find_meta(name: str, proj_name: str):
+        # Strip leading "model." so vLLM's named_modules path maps to backbone.layers.N...
+        name_stripped = name.removeprefix("model.")
         candidates = (
-            f"{name}.{proj_name}",                        # module path (save_w4a16_checkpoint)
-            f"{name}.{proj_name}.weight",                 # state dict key (convert.py)
-            f"model.{name}.{proj_name}.weight",           # state dict with model. prefix
-            f"backbone.{name}.{proj_name}.weight",        # Nemotron-H uses backbone. prefix
+            f"{name}.{proj_name}",                             # module path (save_w4a16_checkpoint)
+            f"{name}.{proj_name}.weight",                      # state dict key (convert.py)
+            f"model.{name}.{proj_name}.weight",                # state dict with model. prefix
+            f"backbone.{name}.{proj_name}.weight",             # backbone. prefix (Nemotron-H)
+            f"backbone.{name_stripped}.{proj_name}.weight",    # vLLM: model.layers.N → backbone.layers.N
         )
         for c in candidates:
             if c in manifest:
@@ -194,7 +197,7 @@ def load_w4a16_checkpoint(
 
             setattr(module, proj_name, q_linear)
             loaded += 1
-            log.debug(f"Loaded {key} from checkpoint")
+            log.debug(f"Loaded {name}.{proj_name} from checkpoint")
 
     log.info(f"load_w4a16_checkpoint: loaded {loaded} projection layers")
     return loaded

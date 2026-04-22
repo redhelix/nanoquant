@@ -47,6 +47,22 @@ class W4A16Linear(nn.Module):
         bias   = linear.bias.data if getattr(linear, "bias", None) is not None else None
         return cls(weight, bias, group_size)
 
+    def _dequantize_weight(self) -> torch.Tensor:
+        """Unpack int4 weights to bfloat16 for eager/eval inference."""
+        K, N = self.in_features, self.out_features
+        n_groups = K // self.group_size
+        # W_q is [K//2, N] column-major packed uint8 (2 nibbles per byte)
+        lo = (self.W_q & 0x0F).to(torch.float32)          # [K//2, N]
+        hi = (self.W_q >> 4).to(torch.float32)             # [K//2, N]
+        # Interleave to restore [K, N]
+        w_int = torch.stack([lo, hi], dim=1).reshape(K, N)  # [K, N]
+        # Reshape for per-group dequantization
+        w_int = w_int.reshape(n_groups, self.group_size, N)
+        scales = self.scales.reshape(n_groups, 1, N).to(torch.float32)
+        zeros  = self.zeros.reshape(n_groups, 1, N).to(torch.float32)
+        w_dq = (w_int + zeros) * scales                     # [n_groups, gs, N]
+        return w_dq.reshape(K, N).to(torch.bfloat16)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -55,7 +71,11 @@ class W4A16Linear(nn.Module):
         orig_shape = x.shape
         x_2d = x.reshape(-1, self.in_features)
 
-        if x_2d.shape[0] == 1:
+        if getattr(self, "_use_dequant", False):
+            # Accuracy-eval path: dequantize to bf16, standard matmul, no Triton kernel.
+            w_dq = self._dequantize_weight()
+            y = torch.nn.functional.linear(x_2d, w_dq)
+        elif x_2d.shape[0] == 1:
             # Decode path: reuse pre-allocated scratch — zero CUDA allocations.
             y = torch.ops.nanoquant.linear_decode(
                 x_2d, self.W_q, self.scales, self.zeros, self.group_size, self._scratch

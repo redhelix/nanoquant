@@ -35,10 +35,9 @@ Quantization code and serving instructions: [github.com/redhelix/nanoquant](http
 | Metric | BF16 baseline | **W4A16 (this model)** | Speedup |
 |---|---|---|---|
 | Single decode token/s (p50) | 44.8 t/s | **51.0 t/s** | **1.14×** |
-| Kernel batch=4 decode (p50) | 44.8 t/s | **99.8 t/s** | **2.23×** |
 
 *Single decode: measured via OpenAI API against vLLM server (20 runs, 128 output tokens).
-Kernel batch=4: measured directly via Triton GEMV benchmark with 4 simultaneous decode tokens — the throughput vLLM achieves when 4 concurrent sessions are each waiting for their next token.*
+Batched-decode throughput under real concurrency has not yet been measured end-to-end.*
 
 ### VRAM
 
@@ -52,19 +51,19 @@ The VRAM reduction allows a 32k context window on a single 24 GB GPU. BF16 requi
 
 ## Accuracy
 
-Benchmarks use the same tasks as NVIDIA's [NVFP4 model card](https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2-NVFP4) for direct comparison. All results use Reasoning-On mode (thinking enabled).
+BF16 numbers are reproduced using NVIDIA's [NeMo-Skills eval framework](https://github.com/NVIDIA-NeMo/Skills/blob/main/docs/tutorials/posts/nemotron-nano-v2-evals.md). All results use Reasoning-On mode (thinking enabled) except RULER 128K which uses Reasoning-Off.
 
-| Benchmark | BF16 (NVIDIA) | **W4A16 (this model)** | NVFP4 (NVIDIA) |
+| Benchmark | BF16 (NeMo-Skills) | **W4A16 (this model)** | NVFP4 (NVIDIA) |
 |---|---|---|---|
-| AIME 2025 | 73.3% | — | 71.5% |
-| MATH-500 | 97.6% | — | 97.2% |
-| GPQA Diamond | 65.2% | — | 62.7% |
-| LiveCodeBench | 70.3% | — | 67.8% |
-| BFCL v3 | 67.2% | — | 65.9% |
+| AIME 2025 | 72.1% | — | 71.5% |
+| MATH-500 | 97.0% | — | 97.2% |
+| GPQA Diamond | 66.1% | — | 62.7% |
+| LiveCodeBench | 67.4% | — | 67.8% |
+| BFCL v3 | 67.0% | — | 65.9% |
 | IFEval (Strict) | 90.1% | — | 89.3% |
-| RULER 128K | 75.4% | — | 75.0% |
+| RULER 128K | 79.1% | — | 75.0% |
 
-*W4A16 results pending — will be updated once benchmarks complete. Contributions welcome via the [nanoquant repo](https://github.com/redhelix/nanoquant).*
+*BF16 results: pass@1 avg-of-8 (GPQA: majority@8), reproduced via NeMo-Skills. W4A16 results pending — contributions welcome via the [nanoquant repo](https://github.com/redhelix/nanoquant).*
 
 NVIDIA's NVFP4 uses Quantization-Aware Distillation (QAD) via ModelOpt, which typically recovers most accuracy lost to quantization. This W4A16 uses simple min-max quantization without calibration data — accuracy results may vary slightly.
 

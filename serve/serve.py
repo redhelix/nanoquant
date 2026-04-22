@@ -60,6 +60,8 @@ def install_patch():
     else:
         print("[nanoquant] No W4A16 shard found — will quantize SSM layers on load", flush=True)
 
+    _dequant_mode = "--dequant-mode" in sys.argv
+
     _orig = NemotronHForCausalLM.load_weights
 
     def _patched(self, weights, *args, **kwargs):
@@ -70,12 +72,20 @@ def install_patch():
         else:
             n = patch_nemotron_h(self, group_size=128, verbose=False)
             print(f"[nanoquant] W4A16 patch applied to {n} MambaMixer2 layers", flush=True)
+        if _dequant_mode:
+            from nanoquant.linear import W4A16Linear
+            count = 0
+            for module in self.modules():
+                if isinstance(module, W4A16Linear):
+                    module._use_dequant = True
+                    count += 1
+            print(f"[nanoquant] Dequant mode: {count} layers will use bf16 matmul", flush=True)
         return result
 
     NemotronHForCausalLM.load_weights = _patched
 
 
-if __name__ == "__main__":
+def main():
     install_patch()
 
     # Cap CUDA graph capture sizes to 4 (1,2,4,8) instead of 51 (1..512).
@@ -93,6 +103,11 @@ if __name__ == "__main__":
         sys.argv += ["--enable-chunked-prefill"]
     if "--max-num-seqs" not in sys.argv:
         sys.argv += ["--max-num-seqs", "8"]
+    if "--trust-remote-code" not in sys.argv:
+        sys.argv += ["--trust-remote-code"]
+
+    # Remove nanoquant-specific flags before vLLM's parser runs
+    sys.argv = [a for a in sys.argv if a != "--dequant-mode"]
 
     from vllm.entrypoints.openai.api_server import run_server, make_arg_parser
     from vllm.utils.argparse_utils import FlexibleArgumentParser
@@ -100,3 +115,7 @@ if __name__ == "__main__":
 
     args = make_arg_parser(FlexibleArgumentParser()).parse_args()
     asyncio.run(run_server(args))
+
+
+if __name__ == "__main__":
+    main()

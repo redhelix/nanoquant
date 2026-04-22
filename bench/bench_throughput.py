@@ -15,13 +15,12 @@ Usage:
   python bench/bench_throughput.py --base-url http://localhost:8000/v1 --model-name W4A16
   python bench/bench_throughput.py --base-url http://localhost:8000/v1 --model-name BF16
 
-Output: tokens/sec p10/p50/p90 for batch=1 and batch=4, matching README table format.
+Output: tokens/sec p10/p50/p90 for batch=1 decode (short + long prompts).
 """
 
 import argparse
 import statistics
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 WARMUP_RUNS   = 3
 MEASURE_RUNS  = 20
@@ -61,47 +60,6 @@ def _benchmark_single(client, model_id: str, prompt: str, label: str):
     return p10, p50, p90
 
 
-def _benchmark_batch(client, model_id: str, prompt: str, batch: int, label: str):
-    """
-    Submit `batch` requests sequentially in quick succession so vLLM
-    schedules them as a single decode batch. Reports aggregate t/s
-    (total tokens / wall time for all batch requests to complete).
-
-    Concurrent HTTP from multiple threads risks triggering concurrent
-    prefills that can OOM CUDA private pool allocations. Sequential
-    submission with a short sleep lets the scheduler batch them properly.
-    """
-    import time
-
-    def _batch_tps():
-        t0 = time.perf_counter()
-        total_tokens = 0
-        for _ in range(batch):
-            resp = client.chat.completions.create(
-                model=model_id,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=MAX_NEW_TOKENS,
-                temperature=0.0,
-                stream=False,
-            )
-            total_tokens += resp.usage.completion_tokens
-        elapsed = time.perf_counter() - t0
-        return total_tokens / elapsed if elapsed > 0 else 0.0
-
-    print(f"\n  [{label} batch={batch}] warming up...", end="", flush=True)
-    for _ in range(WARMUP_RUNS):
-        _batch_tps()
-
-    print(f" measuring ({MEASURE_RUNS} rounds)...", end="", flush=True)
-    samples = [_batch_tps() for _ in range(MEASURE_RUNS)]
-    samples.sort()
-    p10 = samples[int(len(samples) * 0.10)]
-    p50 = statistics.median(samples)
-    p90 = samples[int(len(samples) * 0.90)]
-    print(f" done")
-    return p10, p50, p90
-
-
 def run(base_url: str, model_id: str, model_name: str):
     try:
         from openai import OpenAI
@@ -123,18 +81,11 @@ def run(base_url: str, model_id: str, model_name: str):
         results[f"batch1_{label}"] = (p10, p50, p90)
         print(f"    batch=1 {label:<6}  p10={p10:.1f}  p50={p50:.1f}  p90={p90:.1f}  t/s")
 
-    for label, prompt in [("short", SHORT_PROMPT), ("long", LONG_PROMPT)]:
-        p10, p50, p90 = _benchmark_batch(client, model_id, prompt, 4, f"batch=4 {label}")
-        results[f"batch4_{label}"] = (p10, p50, p90)
-        print(f"    batch=4 {label:<6}  p10={p10:.1f}  p50={p50:.1f}  p90={p90:.1f}  t/s (total)")
-
     print(f"\n{'=' * 60}")
     print(f"  README TABLE FORMAT ({model_name})")
     print(f"{'=' * 60}")
     b1_short = results["batch1_short"]
-    b4_short = results["batch4_short"]
     print(f"  | Batch=1 decode (p50) | {b1_short[1]:.1f} t/s |")
-    print(f"  | Batch=4 decode (p50) | {b4_short[1]:.1f} t/s |")
     print(f"{'=' * 60}\n")
 
     return results

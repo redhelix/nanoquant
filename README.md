@@ -9,12 +9,11 @@ A custom Triton GEMV kernel that quantizes the SSM (Mamba-2) layers of Nemotron-
 | Metric | BF16 baseline | W4A16 (NanoQuant) | Gain |
 |---|---|---|---|
 | Single decode token/s (p50) | 44.8 t/s | **51.0 t/s** | **1.14×** |
-| Kernel-level batch=4 decode (p50) | 44.8 t/s | **99.8 t/s** | **2.23×** |
 | SSM layer VRAM | 16.6 GB | **8.5 GB** | **−8.1 GB** |
 
 The VRAM reduction makes the model fit comfortably on a single 24 GB GPU with a 32k context window.
 
-**Benchmark methodology:** Single decode t/s measured via OpenAI API against the live vLLM server (20 runs, 3 warmup, 128 output tokens). Kernel-level batch=4 measured directly via the Triton GEMV benchmark with 4 simultaneous decode tokens (`bench/bench_gemv.py`), which is the throughput vLLM achieves when 4 concurrent users are each waiting for their next decode token.
+**Benchmark methodology:** Single decode t/s measured via OpenAI API against the live vLLM server (20 runs, 3 warmup, 128 output tokens, `bench/bench_throughput.py`). Batched-decode throughput under real concurrency has not yet been measured end-to-end.
 
 ## Why SSM layers?
 
@@ -36,7 +35,8 @@ nanoquant/patch.py       patch_nemotron_h()  — swaps MambaMixer2 in_proj/out_p
 nanoquant/checkpoint.py  save/load W4A16     — standalone safetensors shard (no re-quant)
 convert.py               offline conversion  — base model → W4A16 checkpoint
 serve/serve.py           vLLM API server     — auto-detects pre-converted vs base model
-bench/bench_throughput.py                   — measures p10/p50/p90 t/s at batch 1 and 4
+bench/bench_throughput.py                   — measures p10/p50/p90 t/s at batch=1
+eval/quick_eval.py                          — fast MATH-500 sanity check (no lm-eval)
 eval/run_benchmarks.py                      — lm-eval harness for all 7 accuracy benchmarks
 ```
 
@@ -144,24 +144,26 @@ The `max_cudagraph_capture_size: 8` compilation config caps captures to 4 sizes 
 | Calibration | Min-max (no calibration data) | QAD (Quantization-Aware Distillation) |
 | Kernel | Custom Triton GEMV | cuDNN / CUTLASS GEMM |
 | vLLM support | Runtime patch via custom_op | Native (ModelOpt) |
-| Batch=1 t/s (RTX 3090) | **54.1** | N/A (A10G target) |
+| Batch=1 t/s (RTX 3090) | **51.0** | N/A (A10G target) |
 | VRAM (9B model) | **8.5 GB** (SSM layers) | ~5 GB full model |
 
 NVIDIA's NVFP4 uses QAD to maintain accuracy closer to BF16. Our W4A16 uses simple min-max quantization — run the benchmarks below to compare accuracy on your tasks.
 
 ## Benchmarks
 
-| Benchmark | BF16 | W4A16 (NanoQuant) | NVFP4 (NVIDIA) |
-|---|---|---|---|
-| AIME 2025 | — | — | 71.5% |
-| MATH-500 | — | — | 97.2% |
-| GPQA Diamond | — | — | 62.7% |
-| LiveCodeBench | — | — | 67.8% |
-| BFCL v3 | — | — | 65.9% |
-| IFEval (Strict) | — | — | 89.3% |
-| RULER 128K | — | — | 75.0% |
+BF16 numbers reproduced via NVIDIA's [NeMo-Skills eval framework](https://github.com/NVIDIA-NeMo/Skills/blob/main/docs/tutorials/posts/nemotron-nano-v2-evals.md) (pass@1 avg-of-8, Reasoning-On; GPQA: majority@8; RULER: Reasoning-Off).
 
-*W4A16 benchmark results pending — contributions welcome.*
+| Benchmark | BF16 (NeMo-Skills) | W4A16 (NanoQuant) | NVFP4 (NVIDIA) |
+|---|---|---|---|
+| AIME 2025 | 72.1% | — | 71.5% |
+| MATH-500 | 97.0% | — | 97.2% |
+| GPQA Diamond | 66.1% | — | 62.7% |
+| LiveCodeBench | 67.4% | — | 67.8% |
+| BFCL v3 | 67.0% | — | 65.9% |
+| IFEval (Strict) | 90.1% | — | 89.3% |
+| RULER 128K | 79.1% | — | 75.0% |
+
+*W4A16 accuracy results pending — contributions welcome.*
 
 ## Running Benchmarks
 
@@ -173,7 +175,18 @@ python bench/bench_throughput.py --model-name W4A16
 # Outputs p10/p50/p90 t/s for batch=1 and batch=4
 ```
 
-### Accuracy (lm-evaluation-harness)
+### Accuracy — quick sanity check (MATH-500 only)
+
+```bash
+# With the vLLM server running, hits the OpenAI endpoint directly.
+# ~10 min on RTX 3090 at 4 concurrent workers.
+python eval/quick_eval.py \
+    --base-url http://localhost:8000/v1 \
+    --model ./Nemotron-Nano-9B-v2-W4A16 \
+    --workers 4
+```
+
+### Accuracy — full suite (lm-evaluation-harness)
 
 ```bash
 pip install nanoquant[eval]
@@ -209,8 +222,9 @@ nanoquant/
 convert.py         Offline quantization CLI (convert + verify subcommands)
 serve/serve.py     vLLM API server — auto-detects pre-converted vs base model
 bench/
-  bench_throughput.py   Measures p10/p50/p90 t/s at batch=1 and batch=4
+  bench_throughput.py   Measures p10/p50/p90 t/s at batch=1
 eval/
+  quick_eval.py         Fast MATH-500 sanity check against live vLLM server
   run_benchmarks.py     lm-eval harness for AIME/MATH/GPQA/LCB/IFEval/RULER
 tests/
   test_kernel.py        Kernel correctness vs BF16 reference
